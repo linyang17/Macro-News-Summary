@@ -4,30 +4,37 @@ import schedule
 import yfinance as yf
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
+
 
 # ================= CONFIGURATION =================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 NEWSAPI_KEY = os.getenv("NEWS_API_KEY") # https://newsapi.org/
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY") # https://finnhub.io/
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") # Slack/Feishu webhook
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL") # Slack webhook
 LANGUAGE_MODE = os.getenv("LANGUAGE_MODE", "MIXED") # EN, CN, MIXED
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+
+# ================= MARKET OF INTEREST =================
+# Shared tickers universe for both market snapshot and news fetching
+MARKET_TICKERS = {
+    "FX": ["EURUSD=X", "USDJPY=X", "GBPUSD=X", "AUDUSD=X", "CNY=X"],  # CNY=X is USDCNY
+    "RATES": ["^TNX", "^FVX", "^IRX"],  # 10Y, 5Y, 13-Week (Proxy for short term)
+    "COMMO": ["GC=F", "CL=F"],  # Gold, Crude Oil
+    "INDEX": ["^GSPC", "^IXIC", "^HSI"],  # SPX, Nasdaq, Hang Seng
+    "VIX": ["^VIX"],
+}
+
 # ================= MARKET DATA MODULE =================
 def get_market_snapshot():
-    tickers = {
-        "FX": ["EURUSD=X", "USDJPY=X", "GBPUSD=X", "AUDUSD=X", "CNY=X"], # CNY=X is USDCNY
-        "RATES": ["^TNX", "^FVX", "^IRX"], # 10Y, 5Y, 13-Week (Proxy for short term)
-        "COMMO": ["GC=F", "CL=F"], # Gold, Crude Oil
-        "INDEX": ["^GSPC", "^IXIC", "^HSI"], # SPX, Nasdaq, Hang Seng
-        "VIX": ["^VIX"]
-    }
     
+    tickers = MARKET_TICKERS
+
     data_str = "【Market Snapshot】\n"
     
     # Batch fetch for efficiency
@@ -57,41 +64,135 @@ def get_market_snapshot():
     
     return data_str
 
+
 # ================= NEWS AGGREGATOR MODULE =================
 def fetch_news():
-    news_items = []
-    
-    # Source 1: Yahoo Finance (Via yfinance - excellent for free macro news)
+    """
+    Fetch today's macro news (from 00:00 UTC to now) from multiple sources.
+    Returns a single string containing each news item on its own line and
+    prints the total number of news items fetched.
+    """
+    news_items: list[str] = []
+
+    # Define 'today' range in UTC
+    now_utc = datetime.now(timezone.utc)
+    start_of_day_utc = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+
+    # Source 1: Yahoo Finance
     try:
-        # Looking at broad macro tickers
-        macro_tickers = yf.Tickers("EURUSD=X ^GSPC ^TNX")
-        for ticker in ["EURUSD=X", "^GSPC", "^TNX"]:
-            news = macro_tickers.tickers[ticker].news
-            for n in news[:3]: # Top 3 per ticker
-                news_items.append(f"Source: Yahoo | Title: {n['title']}")
+        # Use ALL tickers defined in MARKET_TICKERS (no manual subset)
+        all_symbols = [sym for symbols in MARKET_TICKERS.values() for sym in symbols]
+        macro_tickers = yf.Tickers(" ".join(all_symbols))
+        for ticker in all_symbols:
+            yf_ticker = macro_tickers.tickers.get(ticker)
+            if yf_ticker is None:
+                continue
+            news_list = getattr(yf_ticker, "news", []) or []
+            
+            for item in news_list:
+                # providerPublishTime is a UNIX timestamp (seconds)
+                ts = item.get("providerPublishTime")
+                if not ts:
+                    continue
+                published_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                # Only keep news from today (UTC)
+                if published_dt < start_of_day_utc or published_dt > now_utc:
+                    continue
+
+                title = item.get("title") or ""
+                summary = item.get("summary") or ""
+                source = item.get("publisher") or "Yahoo Finance"
+
+                line_parts = [
+                    f"Source: {source}",
+                    f"Section: Yahoo-{ticker}",
+                ]
+                if title:
+                    line_parts.append(f"Title: {title}")
+                if summary:
+                    line_parts.append(f"Summary: {summary}")
+                news_items.append(" | ".join(line_parts))
     except Exception as e:
         print(f"Yahoo News Error: {e}")
 
-    # Source 2: Finnhub (Market News)
+    # Source 2: Finnhub (General Market News)
     if FINNHUB_KEY:
         try:
             url = f"https://finnhub.io/api/v1/news?category=general&token={FINNHUB_KEY}"
-            r = requests.get(url).json()
-            for n in r[:5]:
-                news_items.append(f"Source: Finnhub | Title: {n['headline']} | Summary: {n['summary']}")
+            res = requests.get(url)
+            data = res.json() if hasattr(res, "json") else []
+            if isinstance(data, list):
+                for item in data:
+                    ts = item.get("datetime")
+                    if not ts:
+                        continue
+                    published_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    if published_dt < start_of_day_utc or published_dt > now_utc:
+                        continue
+
+                    headline = item.get("headline") or ""
+                    summary = item.get("summary") or ""
+                    source = item.get("source") or "Finnhub"
+
+                    line_parts = [
+                        f"Source: {source}",
+                        "Section: Finnhub-general",
+                    ]
+                    if headline:
+                        line_parts.append(f"Title: {headline}")
+                    if summary:
+                        line_parts.append(f"Summary: {summary}")
+                    news_items.append(" | ".join(line_parts))
         except Exception as e:
             print(f"Finnhub Error: {e}")
 
-    # Source 3: NewsAPI (Global Macro)
+    # Source 3: NewsAPI (Global Macro Business Headlines)
     if NEWSAPI_KEY:
         try:
-            url = f"https://newsapi.org/v2/top-headlines?category=business&language=en&apiKey={NEWSAPI_KEY}"
-            r = requests.get(url).json()
-            if 'articles' in r:
-                for n in r['articles'][:5]:
-                    news_items.append(f"Source: NewsAPI | Title: {n['title']}")
+            url = (
+                "https://newsapi.org/v2/top-headlines?category=business"
+                "&language=en"
+                f"&apiKey={NEWSAPI_KEY}"
+            )
+            res = requests.get(url)
+            data = res.json() if hasattr(res, "json") else {}
+            articles = data.get("articles") or []
+            for item in articles:
+                published_at = item.get("publishedAt")
+                if not published_at:
+                    continue
+                # publishedAt is an ISO8601 string in UTC, e.g. "2025-12-01T17:45:00Z"
+                try:
+                    published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                except Exception:
+                    continue
+
+                if published_dt < start_of_day_utc or published_dt > now_utc:
+                    continue
+
+                title = item.get("title") or ""
+                description = (
+                    item.get("description")
+                    or item.get("content")
+                    or ""
+                )
+                source_obj = item.get("source") or {}
+                source_name = source_obj.get("name") or "NewsAPI"
+
+                line_parts = [
+                    f"Source: {source_name}",
+                    "Section: NewsAPI-business",
+                ]
+                if title:
+                    line_parts.append(f"Title: {title}")
+                if description:
+                    line_parts.append(f"Description: {description}")
+                news_items.append(" | ".join(line_parts))
         except Exception as e:
             print(f"NewsAPI Error: {e}")
+
+    # Print total count at the end
+    print(f"Total news items fetched today: {len(news_items)}")
 
     return "\n".join(news_items)
 
@@ -151,22 +252,26 @@ def analyze_market(market_data, raw_news):
 
 # ================= NOTIFICATION MODULE =================
 def send_notification(content):
-    if not WEBHOOK_URL:
-        print("No Webhook URL set. Printing to console.")
+    if not SLACK_WEBHOOK_URL:
+        print("No Slack Webhook URL set. Printing to console.")
         print(content)
         return
 
     # Adapting for Feishu/Lark (JSON format)
     # If using Slack, change payload structure accordingly
-    payload = {
+    payload_feishu = {
         "msg_type": "text",
         "content": {
             "text": content
         }
     }
+
+    payload_slack = {
+        "text": content
+    }
     
     try:
-        requests.post(WEBHOOK_URL, json=payload)
+        requests.post(SLACK_WEBHOOK_URL, json=payload_slack)
         print("Notification sent.")
     except Exception as e:
         print(f"Notification Failed: {e}")
@@ -192,9 +297,6 @@ if __name__ == "__main__":
     schedule.every().day.at("12:00").do(job)
     schedule.every().day.at("16:00").do(job)
     schedule.every().day.at("21:00").do(job)
-    
-    # Run once immediately for testing/debugging (optional, remove in prod)
-    # job() 
     
     print("System initialized. Waiting for schedule...")
     while True:

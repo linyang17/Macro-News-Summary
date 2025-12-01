@@ -1,3 +1,4 @@
 /.DS_Store
 /macro-news-docker.Dockerfile
 .env
+keys.env
