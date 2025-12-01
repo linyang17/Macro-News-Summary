@@ -6,6 +6,8 @@ import requests
 import json
 from datetime import datetime
 from openai import OpenAI
+from dotenv import load_dotenv
+load_dotenv()
 
 # ================= CONFIGURATION =================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
