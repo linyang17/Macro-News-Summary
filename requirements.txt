@@ -4,3 +4,4 @@ schedule
 openai
 pandas
 python-dotenv
+Flask

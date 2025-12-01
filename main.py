@@ -88,7 +88,7 @@ def fetch_news():
             if yf_ticker is None:
                 continue
             news_list = getattr(yf_ticker, "news", []) or []
-            
+
             for item in news_list:
                 # providerPublishTime is a UNIX timestamp (seconds)
                 ts = item.get("providerPublishTime")
@@ -208,17 +208,21 @@ def analyze_market(market_data, raw_news):
     Requirements:
     1. Tone: Professional, direct, 'Traders' Talk'. No fluff.
     2. Focus: Central Bank Policy (Fed/ECB/BOE/BOJ/PBOC etc), Geopolitics affecting supply chains/energy, Yield Curve dynamics, FX Flows.
-    3. Structure:
+    3. Format: Daily market summary that sales trader can use to brief clients in an easy-to-read and professional format.
+    4. Structure:
        - Market Levels (Keep it brief)
        - The Narrative (Deep logic analysis: Why are things moving? Connection between rates/FX/Commodities)
-       - Watchlist (What to look for next)
+       - Watchlist (What to look for next, in brief)
+       - Quick key technical levels (trading cues)
+
     """
     
     if LANGUAGE_MODE == "MIXED":
         lang_instruction = """
         Output Language: 'Chinglish' (Chinese grammar with professional English Terminology).
-        Example: "US 10Y Yield 突破关键节点，预示市场正在 re-price 年底前 Fed 再加息一次的概率。如果 PCE 数据超预期，VIX 可能会 spike 到 25 以上，此时 risk-off sentiment 将主导 Cross-asset correlation，建议减少 equity exposure，在此位置 long USDCNY 依然是 carry 和 hedge 的较好选择。"
+        Example: "US 10Y Yield 突破关键节点，预示市场正在 re-price 年底前 Fed 再加息一次的概率。如果 PCE 数据超预期，VIX 可能会 spike 到 25 以上，此时避险情绪将主导跨资产相关性，建议减少 equity exposure，在此位置 long USDCNY 依然是 carry 和 hedge 的较好选择。"
         Use English for: Financial terms (Duration, Convexity, Bear Steepening, Pivot), some Action verbs (Re-price, Rally, Sell-off), Asset classes.
+        Use Chinese for: All other terms and phrases, keep native Chinese logic and expressions.
         """
     elif LANGUAGE_MODE == "EN":
         lang_instruction = "Output Language: Professional English."
@@ -239,12 +243,12 @@ def analyze_market(market_data, raw_news):
 
     try:
         response = client.chat.completions.create(
-            model="gpt-5.1", # Use latest model for analysis
+            model="gpt-5-mini", # Use latest model for analysis
             messages=[
                 {"role": "system", "content": system_prompt + lang_instruction},
                 {"role": "user", "content": user_content}
             ],
-            temperature=0.5
+            temperature=1
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -302,3 +306,13 @@ if __name__ == "__main__":
     while True:
         schedule.run_pending()
         time.sleep(60)
+
+# ================= GCP HTTP ENTRYPOINT =================
+def run_news(request):
+    """
+    HTTP entrypoint for Cloud Run Function.
+    Calling this URL runs a single newsletter job and returns simple text.
+    """
+    print("GCP run_news triggered")
+    job()
+    return "OK"
