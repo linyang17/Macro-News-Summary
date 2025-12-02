@@ -39,8 +39,7 @@ def get_market_snapshot():
                 if sym == "^TNX": name = "US10Y"
                 if sym == "^FVX": name = "US05Y"
                 
-                emoji = "🟢" if change_pct > 0 else "🔴"
-                data_str += f" {name}: {price:.4f} {emoji}  ({change_pct:+.2f}%)\n"
+                data_str += f" {name}: {price:.4f} ({change_pct:+.2f}%)\n"
             except:
                 continue
         data_str += "------------------\n"

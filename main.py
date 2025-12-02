@@ -8,7 +8,7 @@ load_dotenv()
 
 # ================= MODULES =================
 from config import OPENAI_API_KEY, LANGUAGE_MODE
-from markets import get_market_snapshot
+from tickers import get_market_snapshot
 from mktsource import fetch_news
 from analysis import analyse_market
 from notification import send_msg_slack
@@ -26,7 +26,7 @@ def job():
     report = analyse_market(client, mkt_data, news_data, LANGUAGE_MODE)
     
     # 3. Send
-    final_output = f"📅 Global Macro Brief | {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n{report}"
+    final_output = f"📅 Global Macro Brief | {datetime.now().strftime('%Y-%m-%d %H:%M')} \n {report}"
     send_msg_slack(final_output)
 
 if __name__ == "__main__":
