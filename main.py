@@ -32,9 +32,8 @@ def job():
 if __name__ == "__main__":
     # Schedule setup
     schedule.every().day.at("07:00").do(job)
-    schedule.every().day.at("12:00").do(job)
-    schedule.every().day.at("16:00").do(job)
-    schedule.every().day.at("21:00").do(job)
+    schedule.every().day.at("14:00").do(job)
+    schedule.every().day.at("20:00").do(job)
     
     print("System initialized. Waiting for schedule...")
     while True:

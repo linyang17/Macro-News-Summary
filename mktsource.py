@@ -35,7 +35,6 @@ def fetch_news():
                 if not ts:
                     continue
                 published_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                # Only keep news from today (UTC)
                 if published_dt < start_of_day_utc or published_dt > now_utc:
                     continue
 
@@ -184,8 +183,7 @@ def fetch_news():
     if FMP_API_KEY:
         try:
             params = {
-                # If you care about specific pairs you can pass symbols like "EURUSD,USDJPY"
-                # For now we leave it empty to get broad FX coverage.
+                # leave it empty to get broad FX coverage.
                 # "symbols": "EURUSD,USDJPY,GBPUSD",
                 "page": 0,
                 "limit": 50,
@@ -203,7 +201,6 @@ def fetch_news():
                     if not published_at:
                         continue
                     try:
-                        # Example: "2022-10-05T16:14:56.000Z"
                         published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
                     except Exception:
                         continue
