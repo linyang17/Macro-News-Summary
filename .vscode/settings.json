@@ -1,3 +1,4 @@
 {
-    "python.defaultInterpreterPath": "/Volumes/DevSSD/python_envs/myenv/bin/python"
+    "python.defaultInterpreterPath": "/Volumes/DevSSD/python_envs/myenv/bin/python",
+    "search.useIgnoreFiles": false
 }

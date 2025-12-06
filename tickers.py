@@ -5,11 +5,52 @@ from datetime import datetime
 # ================= MARKET OF INTEREST =================
 # Shared tickers universe for both market snapshot and news fetching
 MARKET_TICKERS = {
-    "FX": ["EURUSD=X", "USDJPY=X", "GBPUSD=X", "AUDUSD=X", "CNY=X"], 
-    "RATES": ["^TNX", "^FVX", "^IRX"],  # 10Y, 5Y, 13-Week (Proxy for short term)
-    "COMMO": ["GC=F", "CL=F"],  # Gold, Crude Oil
-    "INDEX": ["^GSPC", "^IXIC", "^HSI"],  # SPX, Nasdaq, Hang Seng
-    "VIX": ["^VIX"],
+  "FX": [
+    "EURUSD=X", "USDJPY=X", "GBPUSD=X", "AUDUSD=X", "NZDUSD=X",
+    "USDCAD=X", "USDCHF=X", "USDNOK=X", "USDSEK=X",
+    "USDCNH=X", "CNY=X", "CNH=X",
+    "EURJPY=X", "EURGBP=X"
+  ],
+
+  "RATES": {
+    "UST_Yields": [
+      "^IRX",   #13-week T-bill
+      "^FVX",   # 5-year Treasury yield
+      "^TNX",   # 10-year Treasury yield
+      "^TYX"    # 30-year Treasury yield
+    ],
+    "UST_Futures": [
+      "ZB=F",   # 30Y Bond Future
+      "ZN=F",   # 10Y Note Future
+      "ZF=F",   # 5Y Note Future
+      "ZT=F"    # 2Y Note Future
+    ],
+    "STIRs": [
+      "SR3=F",  # SOFR futures (generic)
+      "GE=F"    # Eurodollar legacy (still used historically)
+    ],
+    "Swaps_Proxies": [
+      "^UST2Y", "^UST5Y", "^UST10Y", "^UST30Y"
+    ]
+  },
+
+  "COMMO": {
+    "Metals": [
+      "GC=F",   # Gold
+      "SI=F",   # Silver
+      "HG=F"    # Copper
+    ],
+    "Energy": [
+      "CL=F",   # WTI Crude Oil
+      "BZ=F",   # Brent
+      "NG=F"    # Natural Gas
+    ],
+    "Agriculture": [
+      "ZS=F",   # Soybean
+      "ZC=F",   # Corn
+      "ZW=F"    # Wheat
+    ]
+  }
 }
 
 
