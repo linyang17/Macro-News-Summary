@@ -12,46 +12,37 @@ MARKET_TICKERS = {
     "EURJPY=X", "EURGBP=X"
   ],
 
-  "RATES": {
-    "UST_Yields": [
+  "RATES": [
       "^IRX",   #13-week T-bill
       "^FVX",   # 5-year Treasury yield
       "^TNX",   # 10-year Treasury yield
       "^TYX"    # 30-year Treasury yield
-    ],
-    "UST_Futures": [
+
       "ZB=F",   # 30Y Bond Future
       "ZN=F",   # 10Y Note Future
       "ZF=F",   # 5Y Note Future
       "ZT=F"    # 2Y Note Future
-    ],
-    "STIRs": [
+
       "SR3=F",  # SOFR futures (generic)
       "GE=F"    # Eurodollar legacy (still used historically)
-    ],
-    "Swaps_Proxies": [
-      "^UST2Y", "^UST5Y", "^UST10Y", "^UST30Y"
-    ]
-  },
 
-  "COMMO": {
-    "Metals": [
+      "^UST2Y", "^UST5Y", "^UST10Y", "^UST30Y"
+    ],
+
+  "COMMO": [
       "GC=F",   # Gold
       "SI=F",   # Silver
       "HG=F"    # Copper
-    ],
-    "Energy": [
+
       "CL=F",   # WTI Crude Oil
       "BZ=F",   # Brent
       "NG=F"    # Natural Gas
-    ],
-    "Agriculture": [
+
       "ZS=F",   # Soybean
       "ZC=F",   # Corn
       "ZW=F"    # Wheat
     ]
   }
-}
 
 
 # ================= MARKET DATA MODULE =================

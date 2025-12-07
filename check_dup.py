@@ -42,6 +42,7 @@ class NewsItem:
     title: str
     summary: str
     text_for_similarity: str  # 归一化后的文本
+    origin: str
 
 
 @dataclass
@@ -57,6 +58,58 @@ class SimilarityHit:
 # -----------------------------
 
 FIELD_PATTERN = re.compile(r"\s*\|\s*")
+
+def infer_origin(section: str) -> str:
+    """
+    Roughly map mktsource 'Section' field back to the logical source block
+    in mktsource.fetch_news(), so that we can see duplicate stats per
+    high-level source (Yahoo, Finnhub, NewsAPI, etc.).
+    """
+    if not section:
+        return "Unknown(missing-section)"
+
+    # Yahoo Finance tickers: "Yahoo-<ticker>"
+    if section.startswith("Yahoo-"):
+        return "Yahoo Finance"
+
+    # Finnhub categories: "Finnhub-general", "Finnhub-forex"
+    if section.startswith("Finnhub-"):
+        return "Finnhub"
+
+    # NewsAPI: "NewsAPI-macro-fx"
+    if section.startswith("NewsAPI-"):
+        return "NewsAPI"
+
+    # Alpha Vantage: "AlphaVantage-macro-fx"
+    if section.startswith("AlphaVantage-"):
+        return "AlphaVantage"
+
+    # FMP: "FMP-forex"
+    if section.startswith("FMP-"):
+        return "FMP"
+
+    # MarketAux: "MarketAux-macro-fx"
+    if section.startswith("MarketAux-"):
+        return "MarketAux"
+
+    # Bloomberg RSS newsletters: "Bloomberg-newsletter"
+    if section == "Bloomberg-newsletter":
+        return "Bloomberg RSS"
+
+    # FXStreet RSS feeds: "FXStreet"
+    if section == "FXStreet":
+        return "FXStreet RSS"
+
+    # Trading Economics: "TradingEconomics-news"
+    if section.startswith("TradingEconomics-"):
+        return "TradingEconomics"
+
+    # Central bank official feeds: sections like "CB-Fed Monetary Policy", "CB-ECB Press" etc.
+    if section.startswith("CB-"):
+        return "CentralBank"
+
+    # Fallback if section didn't match anything known
+    return f"UnknownOrigin({section})"
 
 
 def normalize_text(text: str) -> str:
@@ -88,6 +141,7 @@ def parse_line_to_item(line: str, idx: int) -> NewsItem:
 
     combined = f"{title}. {summary}".strip()
     norm_text = normalize_text(combined)
+    origin = infer_origin(section)
 
     return NewsItem(
         idx=idx,
@@ -97,6 +151,7 @@ def parse_line_to_item(line: str, idx: int) -> NewsItem:
         title=title,
         summary=summary,
         text_for_similarity=norm_text or normalize_text(title),
+        origin=origin,
     )
 
 
@@ -115,14 +170,17 @@ def analyze_duplicates(items: list[NewsItem]) -> tuple[
     list[SimilarityHit],
     dict[str, dict],
     dict[str, dict],
-    dict[tuple[str, str], int]
+    dict[str, dict],
+    dict[tuple[str, str], int],
 ]:
     """
     返回：
     - hits: 所有相似度 >= SIMILAR_THRESHOLD 的 pair
-    - source_stats: 每个 source 的统计
-    - section_stats: 每个 section 的统计
-    - source_overlap: (source_a, source_b) -> 重复条数
+    - source_stats: 每个具体 external source 的统计（Biztoc、MarketWatch 等）
+    - section_stats: 每个 section 字段的统计（例如 NewsAPI-macro-fx）
+    - source_overlap: (source_a, source_b) -> 重复条数（按 external source 粒度）
+    - origin_stats: 按 mktsource 里“源块”（Yahoo、Finnhub、NewsAPI 等）聚合的统计
+    - origin_overlap: (origin_a, origin_b) -> 重复条数（按 mktsource 源块聚合）
     """
     n = len(items)
     print(f"Total news items: {n}")
@@ -136,18 +194,23 @@ def analyze_duplicates(items: list[NewsItem]) -> tuple[
         s: {"total": 0, "dup": 0, "similar": 0}
         for s in {item.section for item in items}
     }
+    origin_stats = {
+        o: {"total": 0, "dup": 0, "similar": 0}
+        for o in {item.origin for item in items}
+    }
 
     # 每条新闻是否被标记为“重复” / “相似”
     is_dup = [False] * n
     is_similar = [False] * n
 
-    # source 之间的交叉重合统计
-    source_overlap: dict[tuple[str, str], int] = defaultdict(int)
+    # origin 之间的交叉重合统计
+    origin_overlap: dict[tuple[str, str], int] = defaultdict(int)
 
     # 先统计总数
     for it in items:
         source_stats[it.source]["total"] += 1
         section_stats[it.section]["total"] += 1
+        origin_stats[it.origin]["total"] += 1
 
     pair_count = 0
     for i in range(n):
@@ -173,22 +236,29 @@ def analyze_duplicates(items: list[NewsItem]) -> tuple[
                 hit_type = "dup" if score >= DUP_THRESHOLD else "similar"
                 hits.append(SimilarityHit(i=i, j=j, score=score, type=hit_type))
 
-                # 标记统计（按“后来者 i”为重复）
+                # 标记统计（只标记，真正累加放到循环后统一处理）
                 if hit_type == "dup":
                     is_dup[i] = True
-                    source_stats[a.source]["dup"] += 1
-                    section_stats[a.section]["dup"] += 1
                 else:
                     is_similar[i] = True
-                    source_stats[a.source]["similar"] += 1
-                    section_stats[a.section]["similar"] += 1
 
-                # 统计 source 间重合（无向边：排序一下）
-                sa, sb = sorted([a.source, b.source])
-                source_overlap[(sa, sb)] += 1
+                # 统计 origin 间重合（同样无向）
+                oa, ob = sorted([a.origin, b.origin])
+                origin_overlap[(oa, ob)] += 1
 
         if pair_count > MAX_PAIR_COMPARISONS:
             break
+
+    # 统一根据 is_dup / is_similar 计数，保证每条新闻最多只算一次
+    for idx, it in enumerate(items):
+        if is_dup[idx]:
+            source_stats[it.source]["dup"] += 1
+            section_stats[it.section]["dup"] += 1
+            origin_stats[it.origin]["dup"] += 1
+        elif is_similar[idx]:
+            source_stats[it.source]["similar"] += 1
+            section_stats[it.section]["similar"] += 1
+            origin_stats[it.origin]["similar"] += 1
 
     # 计算重复率
     for s, st in source_stats.items():
@@ -201,25 +271,30 @@ def analyze_duplicates(items: list[NewsItem]) -> tuple[
         st["dup_rate"] = st["dup"] / total
         st["similar_rate"] = (st["dup"] + st["similar"]) / total
 
-    return hits, source_stats, section_stats, source_overlap
+    for o, st in origin_stats.items():
+        total = st["total"] or 1
+        st["dup_rate"] = st["dup"] / total
+        st["similar_rate"] = (st["dup"] + st["similar"]) / total
+
+    return hits, source_stats, section_stats, origin_stats, origin_overlap
 
 
 # -----------------------------
 # 打印报告
 # -----------------------------
 
-def print_stats(source_stats, section_stats, source_overlap):
-    print("\n=== Per Source Stats ===")
-    for src, st in sorted(
-        source_stats.items(), key=lambda kv: kv[1]["dup_rate"], reverse=True
+def print_stats(source_stats, section_stats, origin_stats, origin_overlap):
+    print("\n=== Per mktsource Origin Stats (聚合到 mktsource 源块) ===")
+    for origin, st in sorted(
+        origin_stats.items(), key=lambda kv: kv[1]["dup_rate"], reverse=True
     ):
         print(
-            f"- {src:20s} | total: {st['total']:4d} | "
+            f"- {origin:25s} | total: {st['total']:4d} | "
             f"dup: {st['dup']:3d} ({st['dup_rate']:.1%}) | "
             f"similar+dup: {st['dup']+st['similar']:3d} ({st['similar_rate']:.1%})"
         )
 
-    print("\n=== Per Section Stats ===")
+    print("\n=== Per Section Stats (mktsource Section 字段) ===")
     for sec, st in sorted(
         section_stats.items(), key=lambda kv: kv[1]["dup_rate"], reverse=True
     ):
@@ -229,17 +304,17 @@ def print_stats(source_stats, section_stats, source_overlap):
             f"similar+dup: {st['dup']+st['similar']:3d} ({st['similar_rate']:.1%})"
         )
 
-    print("\n=== Source Overlap (top 20 pairs by count) ===")
-    sorted_overlap = sorted(
-        source_overlap.items(), key=lambda kv: kv[1], reverse=True
+    print("\n=== Origin Overlap (top 20 pairs by count, 按 mktsource 源块聚合) ===")
+    sorted_origin_overlap = sorted(
+        origin_overlap.items(), key=lambda kv: kv[1], reverse=True
     )[:20]
-    for (sa, sb), cnt in sorted_overlap:
-        print(f"- {sa}  <->  {sb} : {cnt} similar/dup items")
+    for (oa, ob), cnt in sorted_origin_overlap:
+        print(f"- {oa}  <->  {ob} : {cnt} similar/dup items")
 
 
 def print_example_pairs(hits, items, max_examples: int = 10):
     """
-    打印一些典型重复 pair，方便人工 eyeball 检查。
+    打印一些典型重复 pair，方便人工检查。
     """
     if not hits:
         print("\nNo similar pairs found above threshold.")
@@ -262,16 +337,17 @@ def print_example_pairs(hits, items, max_examples: int = 10):
 # -----------------------------
 
 def main():
-    raw = fetch_news()
+    # test time window
+    raw = fetch_news(start_time=datetime(2025, 12, 7, 0, 0), end_time=datetime(2025, 12, 7, 20, 59))
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     items = [parse_line_to_item(line, idx) for idx, line in enumerate(lines)]
 
-    hits, source_stats, section_stats, source_overlap = analyze_duplicates(items)
+    hits, source_stats, section_stats, origin_stats, origin_overlap = analyze_duplicates(items)
 
-    print_stats(source_stats, section_stats, source_overlap)
+    print_stats(source_stats, section_stats, origin_stats, origin_overlap)
     print_example_pairs(hits, items, max_examples=15)
 
 
 if __name__ == "__main__":
-    print(f"[{datetime.utcnow().isoformat()}] Running duplicate analysis...")
+    print(f"[{datetime.now().isoformat()}] Running duplicate analysis...")
     main()
