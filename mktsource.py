@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from xml.etree import ElementTree
 import requests
@@ -9,7 +9,6 @@ from config import (
     FINNHUB_API_KEY,
     ALPHAVANTAGE_API_KEY,
     FMP_API_KEY,
-    NEWSDATA_API_KEY,
     MARKET_AUX_API_KEY,
 )
 from tickers import MARKET_TICKERS
@@ -32,7 +31,13 @@ def _format_time(dt: datetime) -> str:
 
 def _parse_rss_feed(url: str, source_name: str, section: str, start_time: datetime, end_time: datetime, news_items: list[str]):
     try:
-        res = requests.get(url, timeout=10)
+        res = requests.get(
+            url,
+            timeout=10,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; MacroNewsBot/1.0; +https://example.com)"
+            },
+        )
         res.raise_for_status()
         root = ElementTree.fromstring(res.content)
         for item in root.findall(".//item"):
@@ -81,24 +86,36 @@ def fetch_news(start_time: datetime, end_time: datetime) -> str:
     # Source 1: Yahoo Finance
     try:
         all_symbols = [sym for symbols in MARKET_TICKERS.values() for sym in symbols]
-        macro_tickers = yf.Tickers(" ".join(all_symbols))
-        for ticker in all_symbols:
-            yf_ticker = macro_tickers.tickers.get(ticker)
-            if yf_ticker is None:
-                continue
-            news_list = getattr(yf_ticker, "news", []) or []
+        yahoo_count = 0
 
+        yahoo_window_start = _ensure_utc(end_time - timedelta(hours=8))
+        yahoo_window_end = _ensure_utc(end_time)
+
+        for ticker in all_symbols:
+            try:
+                yf_ticker = yf.Ticker(ticker)
+            except Exception as e:
+                print(f"Yahoo News Warning: failed to init Ticker {ticker}: {e}")
+                continue
+
+            try:
+                # yfinance.Ticker.get_news supports count and tab="news"/"all"/"press releases"
+                news_list = yf_ticker.get_news(count=50, tab="all")
+            except Exception:
+                news_list = getattr(yf_ticker, "news", None) or []
+
+            print(f"Yahoo News Debug: ticker={ticker}, raw_news_count={len(news_list)}")
             for item in news_list:
                 ts = item.get("providerPublishTime")
                 if not ts:
                     continue
                 published_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                if not _within_window(published_dt, start_time, end_time):
+                if not _within_window(published_dt, yahoo_window_start, yahoo_window_end):
                     continue
 
                 title = item.get("title") or ""
                 summary = item.get("summary") or ""
-                source = item.get("publisher") or "Yahoo Finance"
+                source = "Yahoo Finance"
 
                 key = (source, title)
                 if key in seen_keys:
@@ -113,7 +130,10 @@ def fetch_news(start_time: datetime, end_time: datetime) -> str:
                     line_parts.append(f"Title: {title}")
                 if summary:
                     line_parts.append(f"Summary: {summary}")
+                
+                yahoo_count += 1
                 news_items.append(" | ".join(line_parts))
+        print(f"Yahoo News Debug: symbols={len(all_symbols)}, items_added={yahoo_count}")
     except Exception as e:
         print(f"Yahoo News Error: {e}")
 
@@ -210,49 +230,58 @@ def fetch_news(start_time: datetime, end_time: datetime) -> str:
     # Source 4: Alpha Vantage News & Sentiment (Macro & FX)
     if ALPHAVANTAGE_API_KEY:
         try:
-            params = {
-                "function": "NEWS_SENTIMENT",
-                "topics": "forex,financial_markets,economic",
-                "time_from": start_time.strftime("%Y%m%dT%H%M"),
-                "time_to": end_time.strftime("%Y%m%dT%H%M"),
-                "apikey": ALPHAVANTAGE_API_KEY,
-            }
-            res = requests.get("https://www.alphavantage.co/query", params=params, timeout=10)
-            data = res.json() if hasattr(res, "json") else {}
-            feed = data.get("feed") or []
-            for item in feed:
-                tp = item.get("time_published")
-                if not tp:
-                    continue
-                try:
-                    published_dt = datetime.strptime(tp, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
-                except Exception:
-                    continue
+            av_topics = [
+                "forex",
+                "financial_markets",
+                "economy_fiscal",
+                "economy_monetary",
+                "economy_macro",
+                "energy_transportation",
+            ]
+            for topic in av_topics:
+                params = {
+                    "function": "NEWS_SENTIMENT",
+                    "topics": topic,  # 单个 topic
+                    "time_from": start_time.strftime("%Y%m%dT%H%M"),
+                    "time_to": end_time.strftime("%Y%m%dT%H%M"),
+                    "apikey": ALPHAVANTAGE_API_KEY,
+                }
+                res = requests.get("https://www.alphavantage.co/query", params=params, timeout=10)
+                data = res.json() if hasattr(res, "json") else {}
+                feed = data.get("feed") or []
 
-                if not _within_window(published_dt, start_time, end_time):
-                    continue
+                for item in feed:
+                    tp = item.get("time_published")
+                    if not tp:
+                        continue
+                    try:
+                        published_dt = datetime.strptime(tp, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+                    except Exception:
+                        continue
 
-                title = item.get("title") or ""
-                summary = item.get("summary") or ""
-                source = item.get("source") or "AlphaVantage"
+                    if not _within_window(published_dt, start_time, end_time):
+                        continue
 
-                key = (source, title)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
+                    title = item.get("title") or ""
+                    summary = item.get("summary") or ""
+                    source = item.get("source") or "AlphaVantage"
 
-                line_parts = [
-                    f"Source: {source}",
-                    "Section: AlphaVantage-macro-fx",
-                ]
-                if title:
-                    line_parts.append(f"Title: {title}")
-                if summary:
-                    line_parts.append(f"Summary: {summary}")
-                news_items.append(" | ".join(line_parts))
+                    key = (source, title)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+
+                    line_parts = [
+                        f"Source: {source}",
+                        f"Section: AlphaVantage-{topic}",
+                    ]
+                    if title:
+                        line_parts.append(f"Title: {title}")
+                    if summary:
+                        line_parts.append(f"Summary: {summary}")
+                    news_items.append(" | ".join(line_parts))
         except Exception as e:
             print(f"AlphaVantage Error: {e}")
-
     # Source 5: Financial Modeling Prep – Forex News
     if FMP_API_KEY:
         try:
@@ -262,11 +291,22 @@ def fetch_news(start_time: datetime, end_time: datetime) -> str:
                 "apikey": FMP_API_KEY,
             }
             res = requests.get(
-                "https://financialmodelingprep.com/stable/news/forex-latest",
+                "https://financialmodelingprep.com/stable/fmp-articles",
                 params=params,
                 timeout=10,
             )
-            data = res.json() if hasattr(res, "json") else []
+            data = []
+            try:
+                res.raise_for_status()
+                data = res.json()
+            except Exception as exc:
+                # If this endpoint is not available under the current subscription,
+                # just log once and skip without treating it as a hard error.
+                status = getattr(res, "status_code", None)
+                if status == 402:
+                    print("FMP Info: fmp-articles endpoint not available under current subscription (402), skipping FMP Forex source.")
+                else:
+                    print(f"FMP Error: {exc} (status={status})")
             if isinstance(data, list):
                 for item in data:
                     published_at = item.get("publishedDate") or item.get("published_at")
@@ -299,65 +339,15 @@ def fetch_news(start_time: datetime, end_time: datetime) -> str:
                         line_parts.append(f"Summary: {text}")
                     news_items.append(" | ".join(line_parts))
         except Exception as e:
-            print(f"FMP Forex Error: {e}")
+            print(f"FMP Error: {e}")
 
-    # Source 6: NewsData.io – Global Macro / FX Headlines
-    if NEWSDATA_API_KEY:
-        try:
-            params = {
-                "apikey": NEWSDATA_API_KEY,
-                "q": "(forex OR FX OR currency OR \"central bank\" OR \"interest rate\" OR macro)",
-                "language": "en",
-                "from_date": start_time.date().isoformat(),
-                "to_date": end_time.date().isoformat(),
-                "page": 0,
-            }
-            res = requests.get("https://newsdata.io/api/1/latest", params=params, timeout=10)
-            data = res.json() if hasattr(res, "json") else {}
-            articles = data.get("results") or data.get("articles") or []
-            for item in articles:
-                published_at = item.get("pubDate") or item.get("publishedAt")
-                if not published_at:
-                    continue
-                try:
-                    published_dt = datetime.fromisoformat(
-                        published_at.replace("Z", "+00:00").replace(" ", "T")
-                    )
-                    if published_dt.tzinfo is None:
-                        published_dt = published_dt.replace(tzinfo=timezone.utc)
-                except Exception:
-                    continue
 
-                if not _within_window(published_dt, start_time, end_time):
-                    continue
-
-                title = item.get("title") or ""
-                description = item.get("description") or item.get("content") or ""
-                source = item.get("source_id") or item.get("source") or "NewsData"
-
-                key = (source, title)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-
-                line_parts = [
-                    f"Source: {source}",
-                    "Section: NewsData-macro-fx",
-                ]
-                if title:
-                    line_parts.append(f"Title: {title}")
-                if description:
-                    line_parts.append(f"Summary: {description}")
-                news_items.append(" | ".join(line_parts))
-        except Exception as e:
-            print(f"NewsData Error: {e}")
-
-    # Source 7: MarketAux – Financial / FX News
+    # Source 6: MarketAux – Financial / FX News
     if MARKET_AUX_API_KEY:
         try:
             params = {
                 "api_token": MARKET_AUX_API_KEY,
-                "filter_entities": "forex,macro",
+                "entity_types": "index,currency",
                 "language": "en",
                 "sort": "published_at:desc",
                 "limit": 100,
@@ -400,15 +390,16 @@ def fetch_news(start_time: datetime, end_time: datetime) -> str:
         except Exception as e:
             print(f"MarketAux Error: {e}")
 
-    # Source 8: Bloomberg Newsletters (RSS)
+    # Source 7: Bloomberg Newsletters (RSS)
     bloomberg_feeds = {
         "Bloomberg Markets": "https://feeds.bloomberg.com/markets/news.rss",
         "Bloomberg Economics": "https://feeds.bloomberg.com/economics/news.rss",
+        "Bloomberg Opinions": "https://feeds.bloomberg.com/bview/news.rss",
     }
     for name, url in bloomberg_feeds.items():
         _parse_rss_feed(url, name, "Bloomberg-newsletter", start_time, end_time, news_items)
 
-    # Source 9: FXStreet (RSS)
+    # Source 8: FXStreet (RSS)
     fxstreet_feeds = {
         "FXStreet News": "https://www.fxstreet.com/rss/news",
         "FXStreet Analysis": "https://www.fxstreet.com/rss/analysis",
@@ -416,44 +407,27 @@ def fetch_news(start_time: datetime, end_time: datetime) -> str:
     for name, url in fxstreet_feeds.items():
         _parse_rss_feed(url, name, "FXStreet", start_time, end_time, news_items)
 
-    # Source 10: Trading Economics
-    try:
-        params = {"c": "guest:guest", "f": "json"}
-        res = requests.get("https://api.tradingeconomics.com/news", params=params, timeout=10)
-        data = res.json() if hasattr(res, "json") else []
-        if isinstance(data, list):
-            for item in data:
-                published_at = item.get("Date") or item.get("DatePublished")
-                if not published_at:
-                    continue
-                try:
-                    published_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-                except Exception:
-                    continue
 
-                if not _within_window(published_dt, start_time, end_time):
-                    continue
-
-                title = item.get("Title") or item.get("title") or ""
-                description = item.get("Description") or item.get("description") or ""
-                source = "Trading Economics"
-
-                key = (source, title)
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-
-                line_parts = [
-                    f"Source: {source}",
-                    "Section: TradingEconomics-news",
-                ]
-                if title:
-                    line_parts.append(f"Title: {title}")
-                if description:
-                    line_parts.append(f"Summary: {description}")
-                news_items.append(" | ".join(line_parts))
-    except Exception as e:
-        print(f"TradingEconomics Error: {e}")
+    # Source 9: Central Bank official releases (rates / govies)
+    central_bank_feeds = {
+        # Federal Reserve monetary policy press releases
+        "Fed Monetary Policy": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+        # ECB combined press / speeches / press conferences feed
+        "ECB Press": "https://www.ecb.europa.eu/rss/press.html",
+        # Bank of England news (includes MPC, rate decisions, speeches)
+        "BoE News": "https://www.bankofengland.co.uk/rss/news",
+        # Reserve Bank of Australia media releases (includes monetary policy decisions)
+        "RBA Media Releases": "https://www.rba.gov.au/rss/rss-cb-media-releases.xml",
+    }
+    for name, url in central_bank_feeds.items():
+        _parse_rss_feed(
+            url,
+            name,
+            f"CB-{name}",
+            start_time,
+            end_time,
+            news_items,
+        )
 
     # Print total count at the end
     print(f"Total news items fetched between {start_time} and {end_time}: {len(news_items)}")
