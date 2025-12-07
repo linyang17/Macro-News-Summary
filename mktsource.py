@@ -88,7 +88,7 @@ def fetch_news(start_time: datetime, end_time: datetime) -> str:
         all_symbols = [sym for symbols in MARKET_TICKERS.values() for sym in symbols]
         yahoo_count = 0
 
-        yahoo_window_start = _ensure_utc(end_time - timedelta(hours=8))
+        yahoo_window_start = _ensure_utc(start_time)
         yahoo_window_end = _ensure_utc(end_time)
 
         for ticker in all_symbols:
